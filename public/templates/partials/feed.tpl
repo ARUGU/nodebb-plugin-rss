@@ -62,6 +62,13 @@
 
 		<div class="col-sm-3 col-xs-12">
 			<div class="form-group">
+				<label>Mashape Key</label>
+				<input type="text" class="form-control mashape-key" placeholder="Key to Mashape for full-text-rss plugin" value="{feeds.mashapeKey}">
+			</div>
+		</div>
+
+		<div class="col-sm-3 col-xs-12">
+			<div class="form-group">
 				<label>&nbsp;</label>
 				<button class="form-control remove btn-warning">Remove</button>
 			</div>
