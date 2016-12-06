@@ -127,7 +127,7 @@ var plugins = module.parent.require('./plugins');
 	}
 
 	function pullFeeds(feeds) {
-		async.eachSeries(feeds, pullFeed, function(err) {
+		async.eachSeries(feeds, pullFeedWithFullTextRss, function(err) {
 			if (err) {
 				winston.error(err.message);
 			}
@@ -263,7 +263,7 @@ var plugins = module.parent.require('./plugins');
 		], timestamp, pid);
 	}
 
-	function getFeedByYahoo(feedUrl, entriesToPull, callback) {
+	function getFeedByYahoo(feedUrl, entriesToPull, mashapeKey, callback) {
 		entriesToPull = parseInt(entriesToPull, 10);
 		entriesToPull = entriesToPull ? entriesToPull : 4;
 		var yql = encodeURIComponent('select entry FROM feednormalizer where url=\'' +
@@ -287,6 +287,171 @@ var plugins = module.parent.require('./plugins');
 				callback(err);
 			}
 		});
+	}
+
+
+
+	function getFeedByFullTextRss(feedUrl, entriesToPull, mashapeKey, callback) {
+		entriesToPull = parseInt(entriesToPull, 10);
+		entriesToPull = entriesToPull ? entriesToPull : 20;
+
+
+
+
+		var yql = encodeURIComponent(feedUrl);
+		request({
+			url: 'https://full-text-rss.p.mashape.com/makefulltextfeed.php?accept=auto&content=1&format=json&lang=2&links=remove&max=' + entriesToPull + '&parser=html5php&summary=1&url=' + yql + '&use_extracted_title=1&xss=1',
+			headers: {
+				'X-Mashape-Key': mashapeKey,
+				'Accept': 'application/json'
+			},
+			timeout: 120000
+		}, function (err, response, body) {
+			if (!err && response.statusCode === 200) {
+				try {
+					var p = JSON.parse(body);
+					if (p.rss.channel.item.length > 0) {
+						callback(null, p.rss.channel.item);
+					} else {
+						callback(new Error('No new feed is returned----- ERROR > ' + err + ', \n RESPONSE ==> ' + response + 'BODY ==> ' + body ));
+					}
+				} catch (e) {
+					callback(e);
+				}
+			} else {
+				callback(err);
+			}
+		});
+	}
+
+
+
+	function postEntryWithFullTextRSS(feed, entry, callback) {
+		if (!entry || !entry.content_encoded) {
+			winston.warn('[nodebb-plugin-rss] invalid content for entry,  ' + feed.url);
+			return callback();
+		}
+
+		user.getUidByUsername(feed.username, function(err, uid) {
+			if (err) {
+				return callback(err);
+			}
+
+			if(!uid) {
+				uid = 1;
+			}
+
+			var tags = [];
+			if (feed.tags) {
+				tags = feed.tags.split(',');
+			}
+
+			var content = S(entry.content_encoded).stripTags('div', 'script', 'span').trim().s;
+
+
+			if (settings.collapseWhiteSpace) {
+				content = S(content).collapseWhitespace().s;
+			}
+
+			content = toMarkdown(content);
+			var link = entry.link ? ('\n\n' + entry.link) : '';
+			var topicData = {
+				uid: uid,
+				title: entry.title,
+				content: content + link,
+				cid: feed.category,
+				tags: tags
+			};
+
+			topics.post(topicData, function(err, result) {
+				if (err) {
+					winston.error(err.message);
+					return callback();
+				}
+
+				if (feed.timestamp === 'feed') {
+					setTimestampToFeedPublishedDate(result, entry);
+				}
+				var max = Math.max(parseInt(meta.config.postDelay, 10) || 10, parseInt(meta.config.newbiePostDelay, 10) || 10) + 1;
+				user.setUserField(uid, 'lastposttime', Date.now() - max * 1000, callback);
+			});
+		});
+	}
+
+
+
+
+
+	function pullFeedWithFullTextRss(feed, callback) {
+		winston.info('Checking for latest news feeds using full-text-rss with url = ' + feed.url + ', entries # = ' + feed.entriesToPull);
+		if (!feed) {
+			return callback();
+		}
+		if (!feed.lastEntryDate) {
+			feed.lastEntryDate = 0;
+		}
+
+		getFeedByFullTextRss(feed.url, feed.entriesToPull, feed.mashapeKey, function(err, entries) {
+			if (err) {
+				winston.error('[[nodebb-plugin-rss:error]] Error pulling feed ' + feed.url, err.message);
+				return callback();
+			}
+
+			entries = Array.isArray(entries) ? entries : [entries];
+
+			feed.lastEntryDate = parseInt(feed.lastEntryDate, 10);
+
+			var mostRecent = feed.lastEntryDate;
+			var entryDate;
+			entries = entries.filter(Boolean);
+			winston.debug('Feed last entry date is ' + feed.lastEntryDate + ' \n number of entries got = ' + entries.length);
+			async.eachSeries(entries, function(entry, next) {
+				if (!entry) {
+					return next();
+				}
+
+				if(!entryDate) {
+
+					// When there is no published date on the article, the following is used to search the database with the entry title. 
+					// if it exists, then we dont update.. else we are gonna create a new topic with the info got from the full text rss
+					var query = {};
+					query.content = entry.title;
+					db.search('topic', query, 10, function(err, existingTopics){
+						winston.debug('Entry date not foud, so searching for topics with same title. error = ' + err + '---- exists = ' + existingTopics);
+						if(existingTopics && existingTopics.length > 0) {
+							winston.debug('Topics already exists.. so not entering it.');
+							next();
+						}else {
+							winston.debug('[plugin-rss] posting, ' + feed.url + ' - title: ' + entry.title + ', published date: ' + entry.pubDate);
+							postEntryWithFullTextRSS(feed, entry, next);
+						}
+					});
+				}else {
+					entryDate = new Date(entry.pubDate).getTime();
+					if (entryDate > feed.lastEntryDate) {
+						if(entryDate > mostRecent) {
+							mostRecent = entryDate;
+						}
+						winston.debug('[plugin-rss] posting, ' + feed.url + ' - title: ' + entry.title + ', published date: ' + entry.pubDate);
+						postEntryWithFullTextRSS(feed, entry, next);
+					} else {
+						winston.debug('News item publish date is less than feed last entry time. entry date = ' + entryDate);
+						next();
+					}
+				}
+			}, function(err) {
+				if (err) {
+					winston.error(err);
+					return callback();
+				}
+				// only save lastEntryDate if it has changed
+				if (mostRecent > feed.lastEntryDate) {
+					db.setObjectField('nodebb-plugin-rss:feed:' + feed.url, 'lastEntryDate', mostRecent, callback);
+				} else {
+					callback();
+				}
+			});
+		});		
 	}
 
 
