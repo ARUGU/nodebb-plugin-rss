@@ -62,7 +62,8 @@
 						tags: '',
 						timestamp: 'now',
 						lastEntryDate: 0,
-						entriesToPull: 4
+						entriesToPull: 4,
+						mashapeKey: ''
 					}]
 				});
 
@@ -96,6 +97,7 @@
 					tags: child.find('.feed-tags').val(),
 					timestamp: child.find('.feed-topictimestamp').val(),
 					lastEntryDate: child.find('.feed-lastEntryDate').val(),
+					mashapeKey: child.find('.mashape-key').val(),
 				};
 
 				if (feed.url) {
